@@ -419,7 +419,7 @@ void sha256d_gpu_hash_shared(const uint32_t threads, const uint32_t startNonce, 
 
 		// valid nonces
 		uint64_t high = cuda_swab32ll(((uint64_t*)buf)[3]);
-		if (high <= c_target[0]) {
+		if (high <= ((uint64_t*)c_target)[0]) {
 			//printf("%08x %08x - %016llx %016llx - %08x %08x\n", buf[7], buf[6], high, d_target[0], c_target[1], c_target[0]);
 			resNonces[1] = atomicExch(resNonces, nonce);
 			//d_target[0] = high;

@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include <cmath>
 #include <stdarg.h>
 #include <string.h>
 #include <inttypes.h>
@@ -960,6 +961,7 @@ static void stratum_buffer_append(struct stratum_ctx *sctx, const char *s)
 
 char *stratum_recv_line(struct stratum_ctx *sctx)
 {
+	applog(LOG_WARNING, "RECEIVING LINE");
 	ssize_t len, buflen;
 	char *tok, *sret = NULL;
 	int timeout = opt_timeout;
@@ -1016,6 +1018,7 @@ char *stratum_recv_line(struct stratum_ctx *sctx)
 out:
 	if (sret && opt_protocol)
 		applog(LOG_DEBUG, "< %s", sret);
+	applog(LOG_INFO, sret);
 	return sret;
 }
 
@@ -1230,13 +1233,8 @@ bool stratum_subscribe(struct stratum_ctx *sctx)
 	if (sctx->rpc2) return true;
 
 start:
-	s = (char*)malloc(128 + (sctx->session_id ? strlen(sctx->session_id) : 0));
-	if (retry)
-		sprintf(s, "{\"id\": 1, \"method\": \"mining.subscribe\", \"params\": []}");
-	else if (sctx->session_id)
-		sprintf(s, "{\"id\": 1, \"method\": \"mining.subscribe\", \"params\": [\"" USER_AGENT "\", \"%s\"]}", sctx->session_id);
-	else
-		sprintf(s, "{\"id\": 1, \"method\": \"mining.subscribe\", \"params\": [\"" USER_AGENT "\"]}");
+	s = (char*)malloc(128);
+	sprintf(s, "{\"jsonrpc\": \"2.0\", \"id\": \"61e39f788ae04442b97d52c6b814ebab\", \"method\": \"subscribe\", \"params\": null}");
 
 	if (!stratum_send_line(sctx, s))
 		goto out;
@@ -1247,6 +1245,7 @@ start:
 	}
 
 	sret = stratum_recv_line(sctx);
+	applog(LOG_INFO, "SUBSCRIBE ANSWER %s", sret);
 	if (!sret)
 		goto out;
 
@@ -1257,7 +1256,7 @@ start:
 		goto out;
 	}
 
-	if (json_integer_value(json_object_get(val, "id")) != 1) {
+	if (strcmp(json_string_value(json_object_get(val, "id")), "61e39f788ae04442b97d52c6b814ebab")) {
 		applog(LOG_WARNING, "Stratum subscribe answer id is not correct!");
 	}
 
@@ -1277,10 +1276,12 @@ start:
 		goto out;
 	}
 
+/*
 	// sid is param 1, extranonce params are 2 and 3
 	if (!stratum_parse_extranonce(sctx, res_val, 1)) {
 		goto out;
 	}
+*/
 
 	ret = true;
 
@@ -1295,6 +1296,8 @@ start:
 	sctx->session_id = sid ? strdup(sid) : NULL;
 	sctx->next_diff = 1.0;
 	pthread_mutex_unlock(&stratum_work_lock);
+
+	applog(LOG_INFO, "OK BABY!!!");
 
 out:
 	free(s);
@@ -1441,6 +1444,47 @@ static uint32_t getblocheight(struct stratum_ctx *sctx)
 
 static bool stratum_notify(struct stratum_ctx *sctx, json_t *params)
 {
+	const char *data, *job_id;
+	double weigth;
+    size_t nonce_size, dsize, jsize;
+    char *buff;
+	int i;
+	bool clean, ret = false;
+
+	job_id = json_string_value(json_object_get(params, "job_id"));
+    jsize = strlen(job_id);
+	weigth = json_real_value(json_object_get(params, "weight"));
+	nonce_size = json_integer_value(json_object_get(params, "nonce_size"));
+
+	data = json_string_value(json_object_get(params, "data"));
+    dsize = strlen(data) / 2;
+	// printf("DATA %s JOB ID %s nonce_size %ld weigh %lf\n", data, job_id, nonce_size, weigth);
+
+	if (!job_id || !weigth || !data || !nonce_size) {
+		applog(LOG_ERR, "Stratum job: invalid parameters");
+		goto out;
+	}
+
+	pthread_mutex_lock(&stratum_work_lock);
+
+	memcpy(sctx->job.data, data, 64);
+    hex2bin(sctx->job.data, data, dsize);
+
+    sctx->job.weigth = weigth;
+    sctx->job.nonce_size = nonce_size;
+
+	free(sctx->job.job_id);
+    sctx->job.job_id = strdup(job_id);
+
+	pthread_mutex_unlock(&stratum_work_lock);
+
+	ret = true;
+
+out:
+	return ret;
+}
+/*
+{
 	const char *job_id, *prevhash, *coinb1, *coinb2, *version, *nbits, *stime;
 	const char *extradata = NULL, *nreward = NULL;
 	size_t coinb1_size, coinb2_size;
@@ -1493,7 +1537,7 @@ static bool stratum_notify(struct stratum_ctx *sctx, json_t *params)
 		goto out;
 	}
 
-	/* store stratum server time diff */
+	// store stratum server time diff
 	hex2bin((uchar *)&ntime, stime, 4);
 	ntime = swab32(ntime) - (uint32_t) time(0);
 	if (ntime > sctx->srvtime_diff) {
@@ -1566,6 +1610,7 @@ static bool stratum_notify(struct stratum_ctx *sctx, json_t *params)
 out:
 	return ret;
 }
+*/
 
 extern volatile time_t g_work_time;
 static bool stratum_set_difficulty(struct stratum_ctx *sctx, json_t *params)
@@ -1857,6 +1902,36 @@ bool stratum_handle_method(struct stratum_ctx *sctx, const char *s)
 	id = json_object_get(val, "id");
 	params = json_object_get(val, "params");
 
+	if (!strcasecmp(method, "job")) {
+		ret = stratum_notify(sctx, params);
+		goto out;
+	}
+
+out:
+	if (val)
+		json_decref(val);
+
+	return ret;
+}
+/*
+{
+	json_t *val, *id, *params;
+	json_error_t err;
+	const char *method;
+	bool ret = false;
+
+	val = JSON_LOADS(s, &err);
+	if (!val) {
+		applog(LOG_ERR, "JSON decode failed(%d): %s", err.line, err.text);
+		goto out;
+	}
+
+	method = json_string_value(json_object_get(val, "method"));
+	if (!method)
+		goto out;
+	id = json_object_get(val, "id");
+	params = json_object_get(val, "params");
+
 	if (!strcasecmp(method, "mining.notify")) {
 		ret = stratum_notify(sctx, params);
 		goto out;
@@ -1919,6 +1994,7 @@ out:
 
 	return ret;
 }
+*/
 
 struct thread_q *tq_new(void)
 {
@@ -2376,4 +2452,19 @@ void print_hash_tests(void)
 	do_gpu_tests();
 
 	free(scratchbuf);
+}
+
+void weight_to_target(uint32_t* target, double weight) {
+    double calc = pow(2, 256 - weight);
+    for(int i=0; i<8; ++i) {
+        target[i] = fmod(calc, 4294967296L);
+        calc /= 4294967296L;
+    }
+    for(int i=0; i<8; ++i) {
+        if (target[i]) {
+            target[i] = target[i] - 1;
+            break;
+        }
+        target[i] = 4294967295L;
+    }
 }

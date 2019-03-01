@@ -113,7 +113,7 @@ int opt_time_limit = -1;
 int opt_shares_limit = -1;
 time_t firstwork_time = 0;
 int opt_timeout = 300; // curl
-int opt_scantime = 10;
+int opt_scantime = 120;
 static json_t *opt_config;
 static const bool opt_time = true;
 volatile enum sha_algos opt_algo = ALGO_AUTO;
@@ -1059,9 +1059,25 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 					pool->user, work->job_id + 8, xnonce2str, ntimestr, noncestr, nvotestr, stratum.job.shares_count + 10);
 			free(nvotestr);
 		} else {
+			/*
 			sprintf(s, "{\"method\": \"mining.submit\", \"params\": ["
 					"\"%s\", \"%s\", \"%s\", \"%s\", \"%s\"], \"id\":%u}",
 					pool->user, work->job_id + 8, xnonce2str, ntimestr, noncestr, stratum.job.shares_count + 10);
+					*/
+			for (int i = 0; i < 4; i++)
+				work->data[16 + i] = swab32(work->data[16 + i]);
+			noncestr = bin2hex((unsigned char *)work->data + 64, 16);
+			for (int i = 0; i < 4; i++)
+				work->data[16 + i] = swab32(work->data[16 + i]);
+			sprintf(s, "\
+				{\
+					\"jsonrpc\": \"2.0\",\
+					\"method\": \"submit\",\
+					\"params\": {\"nonce\": \"%s\", \"job_id\": \"%s\"},\
+					\"id\":\"85b8df9bfe8f428f93da9012a379aee5\"\
+				}", noncestr, work->job_id);
+			printf("SUBMITING NONCE=%u CYCLE=%u THREAD=%u\n%s\n", work->data[19], work->data[18], work->data[17], s);
+
 		}
 		free(xnonce2str);
 		free(ntimestr);
@@ -1397,6 +1413,7 @@ static bool workio_get_work(struct workio_cmd *wc, CURL *curl)
 
 static bool workio_submit_work(struct workio_cmd *wc, CURL *curl)
 {
+		applog(LOG_INFO, "TESTESTESTESTESTESTESTESTESTTTTTTTTTTEST");
 	int failures = 0;
 	uint32_t pooln = wc->pooln;
 	// applog(LOG_DEBUG, "%s: pool %d", __func__, wc->pooln);
@@ -1556,6 +1573,48 @@ err_out:
 
 static bool stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
 {
+	if (opt_debug) {
+		applog(LOG_DEBUG, "GENERATING WORK");
+	}
+
+	if (!sctx->job.job_id) {
+		// applog(LOG_WARNING, "stratum_gen_work: job not yet retrieved");
+		return false;
+	}
+
+	pthread_mutex_lock(&stratum_work_lock);
+
+	memcpy(work->job_id, sctx->job.job_id, 128);
+	// printf("GENERATING JOB WITH ID %s\n", work->job_id);
+
+	memcpy(work->data, sctx->job.data, 64);
+	memset(work->data+16, 0, 64);
+	work->data[20] = 0x80000000;
+	work->data[31] = 0x00000280;
+
+	for (int i = 0; i < 20; i++) work->data[i] = be32dec(work->data+i);
+
+	pthread_mutex_unlock(&stratum_work_lock);
+
+	if (opt_debug) {
+		applog(LOG_DEBUG, "GENERATED WORK");
+		char *header = bin2hex((const unsigned char *)work->data, 128);
+		applog(LOG_DEBUG, "DEBUG: job_id='%s' header=%s", work->job_id, header);
+		free(header);
+	}
+
+	if (opt_algo == ALGO_SCRYPT)
+		weight_to_target(work->target, sctx->job.weigth / 65536.0);
+	else
+		weight_to_target(work->target, sctx->job.weigth);
+		char s[64];
+		cbin2hex(s, (char*)work->target, 32);
+		applog(LOG_DEBUG, "WEIGHT %f TARGET %s\n", sctx->job.weigth, s);
+
+	return true;
+}
+/*
+{
 	uchar merkle_root[64] = { 0 };
 	int i;
 
@@ -1580,7 +1639,7 @@ static bool stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
 	// and the pool of the current stratum
 	work->pooln = sctx->pooln;
 
-	/* Generate merkle root */
+	// Generate merkle root
 	switch (opt_algo) {
 		case ALGO_DECRED:
 		case ALGO_EQUIHASH:
@@ -1615,10 +1674,10 @@ static bool stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
 			sha256d(merkle_root, merkle_root, 64);
 	}
 	
-	/* Increment extranonce2 */
+	// Increment extranonce2
 	for (i = 0; i < (int)sctx->xnonce2_size && !++sctx->job.xnonce2[i]; i++);
 
-	/* Assemble block header */
+	// Assemble block header
 	memset(work->data, 0, sizeof(work->data));
 	work->data[0] = le32dec(sctx->job.version);
 	for (i = 0; i < 8; i++)
@@ -1775,6 +1834,7 @@ static bool stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
 
 	return true;
 }
+*/
 
 void restart_threads(void)
 {
@@ -1848,13 +1908,15 @@ static void *miner_thread(void *userdata)
 	struct work work;
 	uint64_t loopcnt = 0;
 	uint32_t max_nonce;
-	uint32_t end_nonce = UINT32_MAX / opt_n_threads * (thr_id + 1) - (thr_id + 1);
+	// uint32_t end_nonce = UINT32_MAX / opt_n_threads * (thr_id + 1) - (thr_id + 1);
+	uint32_t end_nonce = UINT32_MAX;
 	time_t tm_rate_log = 0;
 	bool work_done = false;
 	bool extrajob = false;
 	char s[16];
 	int rc = 0;
 
+	applog(LOG_INFO, "RESETTING WORK");
 	memset(&work, 0, sizeof(work)); // prevent work from being used uninitialized
 
 	if (opt_priority > 0) {
@@ -1916,7 +1978,8 @@ static void *miner_thread(void *userdata)
 		bool regen = false;
 
 		// &work.data[19]
-		int wcmplen = (opt_algo == ALGO_DECRED) ? 140 : 76;
+		// int wcmplen = (opt_algo == ALGO_DECRED) ? 140 : 76;
+		int wcmplen = (opt_algo == ALGO_DECRED) ? 140 : 64;
 		int wcmpoft = 0;
 
 		if (opt_algo == ALGO_LBRY) wcmplen = 108;
@@ -1944,6 +2007,7 @@ static void *miner_thread(void *userdata)
 
 			if (opt_algo == ALGO_DECRED || opt_algo == ALGO_WILDKECCAK /* getjob */)
 				work_done = true; // force "regen" hash
+			applog(LOG_INFO, "%d %s %d + %d\n", time(NULL), time(NULL) >= g_work_time+ opt_scantime ? ">=" : "<", g_work_time, opt_scantime);
 			while (!work_done && time(NULL) >= (g_work_time + opt_scantime)) {
 				usleep(100*1000);
 				if (sleeptime > 4) {
@@ -1958,6 +2022,7 @@ static void *miner_thread(void *userdata)
 			pthread_mutex_lock(&g_work_lock);
 			extrajob |= work_done;
 
+			/*
 			regen = (nonceptr[0] >= end_nonce);
 			if (opt_algo == ALGO_SIA) {
 				regen = ((nonceptr[1] & 0xFF00) >= 0xF000);
@@ -1967,11 +2032,13 @@ static void *miner_thread(void *userdata)
 			if (regen) {
 				work_done = false;
 				extrajob = false;
+				applog(LOG_INFO, "REGENERATING");
 				if (stratum_gen_work(&stratum, &g_work))
 					g_work_time = time(NULL);
 				if (opt_algo == ALGO_CRYPTONIGHT || opt_algo == ALGO_CRYPTOLIGHT)
 					nonceptr[0] += 0x100000;
 			}
+			*/
 		} else {
 			uint32_t secs = 0;
 			pthread_mutex_lock(&g_work_lock);
@@ -2016,6 +2083,12 @@ static void *miner_thread(void *userdata)
 			wcmplen -= 4;
 		}
 
+		char *s;
+		s = bin2hex((unsigned char *)g_work.data, 80);
+		applog(LOG_WARNING, "GLOBAL WORK %s", s);
+		s = bin2hex((unsigned char *)work.data, 80);
+		applog(LOG_WARNING, "LOCAL  WORK %s", s);
+
 		if (opt_algo == ALGO_CRYPTONIGHT || opt_algo == ALGO_CRYPTOLIGHT) {
 			uint32_t oldpos = nonceptr[0];
 			bool nicehash = strstr(pools[cur_pooln].url, "nicehash") != NULL;
@@ -2050,10 +2123,23 @@ static void *miner_thread(void *userdata)
 				}
 			}
 			#endif
+			applog(LOG_WARNING, "DIFFERENT FROM %d IN LEN %d", wcmpoft, wcmplen);
+			applog(LOG_WARNING, "COPYING");
 			memcpy(&work, &g_work, sizeof(struct work));
-			nonceptr[0] = (UINT32_MAX / opt_n_threads) * thr_id; // 0 if single thr
+			// nonceptr[0] = (UINT32_MAX / opt_n_threads) * thr_id; // 0 if single thr
+			nonceptr[1] = thr_id; // set thread nonce byte
+			// nonceptr[0] = ? // too many bytes, we can ignore this one
+		} 
+
+		else if (work.data[19] == UINT32_MAX) {
+			nonceptr[3] = 0; // Reset first byte of nonce
+			nonceptr[2]++; // Increment extra nonce
 		} else
-			nonceptr[0]++; //??
+			// nonceptr[0]++; //??
+			nonceptr[3]++;
+
+		s = bin2hex((unsigned char *)work.data, 80);
+		applog(LOG_WARNING, "UPDTED WORK %s", s);
 
 		if (opt_algo == ALGO_DECRED) {
 			// suprnova job_id check without data/target/height change...
@@ -2519,6 +2605,20 @@ static void *miner_thread(void *userdata)
 			rc = scanhash_skunk(thr_id, &work, max_nonce, &hashes_done);
 			break;
 		case ALGO_SHA256D:
+			/*
+			if (opt_debug)
+			{
+				char *header = bin2hex((const unsigned char *)work.data, 128);
+				char *target = bin2hex((const unsigned char *)work.target, 32);
+				applog(LOG_DEBUG, "DEBUG: job_id='%s' header=%s target=%s t7=%d", work.job_id, header, target, work.target[7]);
+				printf("\nXXXXXXXXXXXXXXXXXXXXXXX %08x\n", work.data[31]);
+				unsigned char *x = (unsigned char*)(work.data+31);
+				printf("\nYYYYYYYYYYYYYYYYYYYYYYY %02x %02x %02x %02x\n", x[3], x[2], x[1], x[0]);
+				free(header);
+				free(target);
+			}
+			*/
+			applog(LOG_INFO, "SUBMITING NONCE=%u CYCLE=%u THREAD=%u", work.data[19], work.data[18], work.data[17]);
 			rc = scanhash_sha256d(thr_id, &work, max_nonce, &hashes_done);
 			break;
 		case ALGO_SHA256T:
@@ -2725,9 +2825,12 @@ static void *miner_thread(void *userdata)
 				gpu_led_percent(dev_id, 50);
 
 			work.submit_nonce_id = 0;
-			nonceptr[0] = work.nonces[0];
-			if (!submit_work(mythr, &work))
+			// nonceptr[0] = work.nonces[0];
+			nonceptr[3] = work.nonces[0];
+			if (!submit_work(mythr, &work)) {
+				applog(LOG_WARNING, "SUBMIT FAILED");
 				break;
+			}
 			nonceptr[0] = curnonce;
 
 			// prevent stale work in solo
@@ -3018,9 +3121,13 @@ wait_stratum_url:
 			pthread_mutex_unlock(&g_work_lock);
 			restart_threads();
 
+			applog(LOG_INFO, "SUBSCRIBING");
 			if (!stratum_connect(&stratum, pool->url) ||
+			    !stratum_subscribe(&stratum))
+			/*
 			    !stratum_subscribe(&stratum) ||
 			    !stratum_authorize(&stratum, pool->user, pool->pass))
+			*/
 			{
 				stratum_disconnect(&stratum);
 				if (opt_retries >= 0 && ++failures > opt_retries) {
@@ -3041,6 +3148,7 @@ wait_stratum_url:
 					applog(LOG_ERR, "...retry after %d seconds", opt_fail_pause);
 				sleep(opt_fail_pause);
 			}
+			applog(LOG_INFO, "SUBSCRIBED");
 		}
 
 		if (stratum.rpc2) {

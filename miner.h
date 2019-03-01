@@ -687,6 +687,11 @@ struct stratum_job {
 	uint32_t height;
 	uint32_t shares_count;
 	double diff;
+
+	char data[80];
+	double weigth;
+    size_t nonce_size;
+
 };
 
 struct stratum_ctx {
@@ -901,6 +906,8 @@ void applog_hex(void *data, int len);
 void applog_hash(void *hash);
 void applog_hash64(void *hash);
 void applog_compare_hash(void *hash, void *hash_ref);
+
+extern void weight_to_target(uint32_t *target, double diff);
 
 void print_hash_tests(void);
 void allium_hash(void *state, const void *input);
