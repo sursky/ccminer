@@ -961,7 +961,6 @@ static void stratum_buffer_append(struct stratum_ctx *sctx, const char *s)
 
 char *stratum_recv_line(struct stratum_ctx *sctx)
 {
-	applog(LOG_WARNING, "RECEIVING LINE");
 	ssize_t len, buflen;
 	char *tok, *sret = NULL;
 	int timeout = opt_timeout;
@@ -1018,7 +1017,6 @@ char *stratum_recv_line(struct stratum_ctx *sctx)
 out:
 	if (sret && opt_protocol)
 		applog(LOG_DEBUG, "< %s", sret);
-	applog(LOG_INFO, sret);
 	return sret;
 }
 
@@ -1458,7 +1456,6 @@ static bool stratum_notify(struct stratum_ctx *sctx, json_t *params)
 
 	data = json_string_value(json_object_get(params, "data"));
     dsize = strlen(data) / 2;
-	// printf("DATA %s JOB ID %s nonce_size %ld weigh %lf\n", data, job_id, nonce_size, weigth);
 
 	if (!job_id || !weigth || !data || !nonce_size) {
 		applog(LOG_ERR, "Stratum job: invalid parameters");
