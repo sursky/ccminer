@@ -1243,7 +1243,6 @@ start:
 	}
 
 	sret = stratum_recv_line(sctx);
-	applog(LOG_INFO, "SUBSCRIBE ANSWER %s", sret);
 	if (!sret)
 		goto out;
 
@@ -1274,13 +1273,6 @@ start:
 		goto out;
 	}
 
-/*
-	// sid is param 1, extranonce params are 2 and 3
-	if (!stratum_parse_extranonce(sctx, res_val, 1)) {
-		goto out;
-	}
-*/
-
 	ret = true;
 
 	// session id (optional)
@@ -1294,8 +1286,6 @@ start:
 	sctx->session_id = sid ? strdup(sid) : NULL;
 	sctx->next_diff = 1.0;
 	pthread_mutex_unlock(&stratum_work_lock);
-
-	applog(LOG_INFO, "OK BABY!!!");
 
 out:
 	free(s);
@@ -1480,134 +1470,6 @@ static bool stratum_notify(struct stratum_ctx *sctx, json_t *params)
 out:
 	return ret;
 }
-/*
-{
-	const char *job_id, *prevhash, *coinb1, *coinb2, *version, *nbits, *stime;
-	const char *extradata = NULL, *nreward = NULL;
-	size_t coinb1_size, coinb2_size;
-	bool clean, ret = false;
-	int merkle_count, i, p=0;
-	json_t *merkle_arr;
-	uchar **merkle = NULL;
-	// uchar(*merkle_tree)[32] = { 0 };
-	int ntime;
-	char algo[64] = { 0 };
-	get_currentalgo(algo, sizeof(algo));
-	bool has_claim = !strcmp(algo, "lbry");
-	bool has_roots = !strcmp(algo, "phi2") && json_array_size(params) == 10;
-
-	if (sctx->is_equihash) {
-		return equi_stratum_notify(sctx, params);
-	}
-
-	job_id = json_string_value(json_array_get(params, p++));
-	prevhash = json_string_value(json_array_get(params, p++));
-	if (has_claim) {
-		extradata = json_string_value(json_array_get(params, p++));
-		if (!extradata || strlen(extradata) != 64) {
-			applog(LOG_ERR, "Stratum notify: invalid claim parameter");
-			goto out;
-		}
-	} else if (has_roots) {
-		extradata = json_string_value(json_array_get(params, p++));
-		if (!extradata || strlen(extradata) != 128) {
-			applog(LOG_ERR, "Stratum notify: invalid UTXO root parameter");
-			goto out;
-		}
-	}
-	coinb1 = json_string_value(json_array_get(params, p++));
-	coinb2 = json_string_value(json_array_get(params, p++));
-	merkle_arr = json_array_get(params, p++);
-	if (!merkle_arr || !json_is_array(merkle_arr))
-		goto out;
-	merkle_count = (int) json_array_size(merkle_arr);
-	version = json_string_value(json_array_get(params, p++));
-	nbits = json_string_value(json_array_get(params, p++));
-	stime = json_string_value(json_array_get(params, p++));
-	clean = json_is_true(json_array_get(params, p)); p++;
-	nreward = json_string_value(json_array_get(params, p++));
-
-	if (!job_id || !prevhash || !coinb1 || !coinb2 || !version || !nbits || !stime ||
-	    strlen(prevhash) != 64 || strlen(version) != 8 ||
-	    strlen(nbits) != 8 || strlen(stime) != 8) {
-		applog(LOG_ERR, "Stratum notify: invalid parameters");
-		goto out;
-	}
-
-	// store stratum server time diff
-	hex2bin((uchar *)&ntime, stime, 4);
-	ntime = swab32(ntime) - (uint32_t) time(0);
-	if (ntime > sctx->srvtime_diff) {
-		sctx->srvtime_diff = ntime;
-		if (opt_protocol && ntime > 20)
-			applog(LOG_DEBUG, "stratum time is at least %ds in the future", ntime);
-	}
-
-	if (merkle_count)
-		merkle = (uchar**) malloc(merkle_count * sizeof(char *));
-	for (i = 0; i < merkle_count; i++) {
-		const char *s = json_string_value(json_array_get(merkle_arr, i));
-		if (!s || strlen(s) != 64) {
-			while (i--)
-				free(merkle[i]);
-			free(merkle);
-			applog(LOG_ERR, "Stratum notify: invalid Merkle branch");
-			goto out;
-		}
-		merkle[i] = (uchar*) malloc(32);
-		hex2bin(merkle[i], s, 32);
-	}
-
-	pthread_mutex_lock(&stratum_work_lock);
-
-	coinb1_size = strlen(coinb1) / 2;
-	coinb2_size = strlen(coinb2) / 2;
-	sctx->job.coinbase_size = coinb1_size + sctx->xnonce1_size +
-	                          sctx->xnonce2_size + coinb2_size;
-
-	sctx->job.coinbase = (uchar*) realloc(sctx->job.coinbase, sctx->job.coinbase_size);
-	sctx->job.xnonce2 = sctx->job.coinbase + coinb1_size + sctx->xnonce1_size;
-	hex2bin(sctx->job.coinbase, coinb1, coinb1_size);
-	memcpy(sctx->job.coinbase + coinb1_size, sctx->xnonce1, sctx->xnonce1_size);
-
-	if (!sctx->job.job_id || strcmp(sctx->job.job_id, job_id))
-		memset(sctx->job.xnonce2, 0, sctx->xnonce2_size);
-	hex2bin(sctx->job.xnonce2 + sctx->xnonce2_size, coinb2, coinb2_size);
-
-	free(sctx->job.job_id);
-	sctx->job.job_id = strdup(job_id);
-	hex2bin(sctx->job.prevhash, prevhash, 32);
-	if (has_claim) hex2bin(sctx->job.extra, extradata, 32);
-	if (has_roots) hex2bin(sctx->job.extra, extradata, 64);
-
-	sctx->job.height = getblocheight(sctx);
-
-	for (i = 0; i < sctx->job.merkle_count; i++)
-		free(sctx->job.merkle[i]);
-	free(sctx->job.merkle);
-	sctx->job.merkle = merkle;
-	sctx->job.merkle_count = merkle_count;
-
-	hex2bin(sctx->job.version, version, 4);
-	hex2bin(sctx->job.nbits, nbits, 4);
-	hex2bin(sctx->job.ntime, stime, 4);
-	if(nreward != NULL)
-	{
-		if(strlen(nreward) == 4)
-			hex2bin(sctx->job.nreward, nreward, 2);
-	}
-	sctx->job.clean = clean;
-
-	sctx->job.diff = sctx->next_diff;
-
-	pthread_mutex_unlock(&stratum_work_lock);
-
-	ret = true;
-
-out:
-	return ret;
-}
-*/
 
 extern volatile time_t g_work_time;
 static bool stratum_set_difficulty(struct stratum_ctx *sctx, json_t *params)
@@ -1910,88 +1772,6 @@ out:
 
 	return ret;
 }
-/*
-{
-	json_t *val, *id, *params;
-	json_error_t err;
-	const char *method;
-	bool ret = false;
-
-	val = JSON_LOADS(s, &err);
-	if (!val) {
-		applog(LOG_ERR, "JSON decode failed(%d): %s", err.line, err.text);
-		goto out;
-	}
-
-	method = json_string_value(json_object_get(val, "method"));
-	if (!method)
-		goto out;
-	id = json_object_get(val, "id");
-	params = json_object_get(val, "params");
-
-	if (!strcasecmp(method, "mining.notify")) {
-		ret = stratum_notify(sctx, params);
-		goto out;
-	}
-	if (!strcasecmp(method, "mining.ping")) { // cgminer 4.7.1+
-		if (opt_debug) applog(LOG_DEBUG, "Pool ping");
-		ret = stratum_pong(sctx, id);
-		goto out;
-	}
-	if (!strcasecmp(method, "mining.set_difficulty")) {
-		ret = stratum_set_difficulty(sctx, params);
-		goto out;
-	}
-	if (!strcasecmp(method, "mining.set_target")) {
-		sctx->is_equihash = true;
-		ret = equi_stratum_set_target(sctx, params);
-		goto out;
-	}
-	if (!strcasecmp(method, "mining.set_extranonce")) {
-		ret = stratum_parse_extranonce(sctx, params, 0);
-		goto out;
-	}
-	if (!strcasecmp(method, "client.reconnect")) {
-		ret = stratum_reconnect(sctx, params);
-		goto out;
-	}
-	if (!strcasecmp(method, "client.get_algo")) { // ccminer only yet!
-		// will prevent wrong algo parameters on a pool, will be used as test on rejects
-		if (!opt_quiet) applog(LOG_NOTICE, "Pool asked your algo parameter");
-		ret = stratum_get_algo(sctx, id, params);
-		goto out;
-	}
-	if (!strcasecmp(method, "client.get_stats")) { // ccminer/yiimp only yet!
-		// optional to fill device benchmarks
-		ret = stratum_get_stats(sctx, id, params);
-		goto out;
-	}
-	if (!strcasecmp(method, "client.get_version")) { // common
-		ret = stratum_get_version(sctx, id, params);
-		goto out;
-	}
-	if (!strcasecmp(method, "client.show_message")) { // common
-		ret = stratum_show_message(sctx, id, params);
-		goto out;
-	}
-	if (sctx->rpc2 && !strcasecmp(method, "job")) { // xmr/bbr
-		ret = rpc2_stratum_job(sctx, id, params);
-		goto out;
-	}
-
-	if (!ret) {
-		// don't fail = disconnect stratum on unknown (and optional?) methods
-		if (opt_debug) applog(LOG_WARNING, "unknown stratum method %s!", method);
-		ret = stratum_unknown_method(sctx, id);
-	}
-
-out:
-	if (val)
-		json_decref(val);
-
-	return ret;
-}
-*/
 
 struct thread_q *tq_new(void)
 {
