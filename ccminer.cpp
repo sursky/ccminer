@@ -144,6 +144,7 @@ int32_t device_led[MAX_GPUS] = { -1, -1 };
 int opt_led_mode = 0;
 int opt_cudaschedule = -1;
 static bool opt_keep_clocks = false;
+char *coinbase_address;
 
 // un-linked to cmdline scrypt options (useless)
 int device_batchsize[MAX_GPUS] = { 0 };
@@ -385,6 +386,7 @@ Options:\n\
   -c, --config=FILE     load a JSON-format configuration file\n\
   -V, --version         display version information and exit\n\
   -h, --help            display this help text and exit\n\
+      --coinbase-addres=.. choose address for mined funds to be credited to\n\
 ";
 
 static char const short_options[] =
@@ -479,6 +481,7 @@ struct option options[] = {
 	{ "diff-multiplier", 1, NULL, 'm' },
 	{ "diff-factor", 1, NULL, 'f' },
 	{ "diff", 1, NULL, 'f' }, // compat
+	{ "coinbase-addr", 1, NULL, 1038 },
 	{ 0, 0, 0, 0 }
 };
 
@@ -2832,6 +2835,8 @@ wait_stratum_url:
 			pthread_mutex_unlock(&g_work_lock);
 			restart_threads();
 
+			stratum.addr = coinbase_address;
+
 			if (!stratum_connect(&stratum, pool->url) ||
 			    !stratum_subscribe(&stratum))
 			{
@@ -3071,6 +3076,9 @@ void parse_arg(int key, char *arg)
 		if (v < 1 || v > 65535) // sanity check
 			show_usage_and_exit(1);
 		opt_api_mcast_port = v;
+		break;
+	case 1038: /* --coinbase-addr */
+		coinbase_address = strdup(arg);
 		break;
 	case 'B':
 		opt_background = true;
