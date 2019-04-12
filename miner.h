@@ -721,6 +721,8 @@ struct stratum_ctx {
 	int rpc2;
 	int is_equihash;
 	int srvtime_diff;
+
+	char *addr;
 };
 
 #define POK_MAX_TXS   4

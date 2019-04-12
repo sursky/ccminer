@@ -1222,7 +1222,7 @@ out:
 
 bool stratum_subscribe(struct stratum_ctx *sctx)
 {
-	char *s, *sret = NULL;
+	char *s, *sret = NULL, *addr;
 	const char *sid;
 	json_t *val = NULL, *res_val, *err_val;
 	json_error_t err;
@@ -1231,8 +1231,17 @@ bool stratum_subscribe(struct stratum_ctx *sctx)
 	if (sctx->rpc2) return true;
 
 start:
-	s = (char*)malloc(128);
-	sprintf(s, "{\"jsonrpc\": \"2.0\", \"id\": \"61e39f788ae04442b97d52c6b814ebab\", \"method\": \"subscribe\", \"params\": null}");
+	s = (char*)malloc(256);
+	addr = (char*)malloc(64);
+	sprintf(addr, "{\"address\": \"%s\"}", sctx->addr);
+	sprintf(s, "\
+	{\
+		\"jsonrpc\": \"2.0\", \
+		\"id\": \"61e39f788ae04442b97d52c6b814ebab\", \
+		\"method\": \"subscribe\", \
+		\"params\": %s\
+	}",
+			sctx->addr == NULL ? "null" : addr);
 
 	if (!stratum_send_line(sctx, s))
 		goto out;
@@ -1264,6 +1273,7 @@ start:
 	    (err_val && !json_is_null(err_val))) {
 		if (opt_debug || retry) {
 			free(s);
+			free(addr);
 			if (err_val)
 				s = json_dumps(err_val, JSON_INDENT(3));
 			else
@@ -1289,6 +1299,7 @@ start:
 
 out:
 	free(s);
+	free(addr);
 	if (val)
 		json_decref(val);
 
